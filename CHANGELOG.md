@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] - 2026-10-25
+
+### Fixed
+- **ci:** Let the release job's token write packages
+
+---
 ## [0.1.0] - 2026-10-25
 
 ### Added
@@ -16,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add git attributes and ignores
 - Lint, test, scan and release the image
 - Add the README, licence and working rules
+- **changelog:** Put each entry on its own line
+- **release:** V0.1.0
 
 ### Fixed
 - **tests:** Let the image's user write the test EPUB on Linux

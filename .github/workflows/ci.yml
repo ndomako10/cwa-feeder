@@ -1,0 +1,53 @@
+name: ci
+
+# Lints the repo and checks the image on every push and pull request,
+# and releases the image from a vX.Y.Z tag. Only the release job's
+# token can write packages.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels the run it replaces.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    # The same hooks the workstation runs, at the versions pinned in
+    # .pre-commit-config.yaml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          # A hook bump changes the key. Starting from the last cache,
+          # pre-commit installs only the hooks that changed.
+          restore-keys: pre-commit-
+      - run: pre-commit run --all-files --show-diff-on-failure
+
+  check:
+    if: github.ref_type != 'tag'
+    uses: ./.github/workflows/image.yml
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: lint
+    uses: ./.github/workflows/image.yml
+    with:
+      release: true
+    permissions:
+      contents: read
+      packages: write

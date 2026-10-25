@@ -1,0 +1,104 @@
+name: image
+
+# Lints, builds, tests and scans the image, and pushes that same image
+# only when called for a release. Called by ci.yml, which sets the
+# token's permissions per event, so a pull request's run can't write
+# packages.
+
+on:
+  workflow_call:
+    inputs:
+      release:
+        description: Push the tested image to GHCR, versioned from the vX.Y.Z tag
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/cwa-feeder
+  # renovate: datasource=github-releases depName=hadolint/hadolint
+  HADOLINT_VERSION: 2.15.1
+  # renovate: datasource=github-releases depName=aquasecurity/trivy
+  TRIVY_VERSION: 0.75.0
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read the release version from the tag
+        if: inputs.release
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$GITHUB_REF_NAME is not vX.Y.Z"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install hadolint and Trivy, checksums verified
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP/bin"
+          base="https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}"
+          curl -fsSLO "$base/hadolint-linux-x86_64"
+          curl -fsSL "$base/checksums.sha256" | grep ' \*hadolint-linux-x86_64$' | sha256sum -c -
+          mv hadolint-linux-x86_64 hadolint
+          chmod +x hadolint
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSLO "$base/$tarball"
+          curl -fsSL "$base/trivy_${TRIVY_VERSION}_checksums.txt" | grep " $tarball\$" | sha256sum -c -
+          tar -xzf "$tarball" trivy
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - run: hadolint Dockerfile
+
+      - name: Build
+        env:
+          VERSION: ${{ steps.version.outputs.version || 'dev' }}
+        run: >-
+          docker build --tag cwa-feeder:ci
+          --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          --label "org.opencontainers.image.revision=$GITHUB_SHA"
+          --label "org.opencontainers.image.version=$VERSION"
+          .
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+
+      - name: Unit and image tests
+        env:
+          CWA_FEEDER_IMAGE: cwa-feeder:ci
+        run: pytest
+
+      # Fails on a HIGH or CRITICAL finding that has a fix to apply. One
+      # with no fix yet is reported but can't be acted on here.
+      - name: Scan
+        run: >-
+          trivy image --scanners vuln --severity HIGH,CRITICAL
+          --ignore-unfixed --exit-code 1 --no-progress cwa-feeder:ci
+
+      - name: Push the tested image
+        if: inputs.release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          # A release version is pushed once; GHCR tags can be overwritten,
+          # so this keeps a version naming exactly one image.
+          if docker manifest inspect "$IMAGE:$VERSION" > /dev/null 2>&1; then
+            echo "::error::$IMAGE:$VERSION already exists"
+            exit 1
+          fi
+          docker tag cwa-feeder:ci "$IMAGE:$VERSION"
+          docker push "$IMAGE:$VERSION"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$VERSION")"
+          echo "Pin: \`$IMAGE:$VERSION@${digest#*@}\`" >> "$GITHUB_STEP_SUMMARY"

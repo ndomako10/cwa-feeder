@@ -1,0 +1,75 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommitTypeAll(chore)",
+    ":semanticCommitScope(deps)"
+  ],
+  "timezone": "America/Detroit",
+  "pre-commit": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "description": "Versions marked with a `# renovate:` comment in workflows",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\.github/workflows/.+\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\S+) depName=(?<depName>\S+)\s+\w+: (?<currentValue>\S+)"
+      ],
+      "extractVersionTemplate": "^v?(?<version>.+)$"
+    },
+    {
+      "description": "Versions marked with a `# renovate:` comment above an ARG in the Dockerfile, such as Calibre's",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\S+) depName=(?<depName>\S+)\s+ARG \w+=(?<currentValue>\S+)"
+      ],
+      "extractVersionTemplate": "^v?(?<version>.+)$"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Tooling patch and digest updates merge themselves once CI passes; minor and major wait for review",
+      "matchUpdateTypes": [
+        "patch",
+        "digest",
+        "pin",
+        "pinDigest"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Releases younger than two weeks wait, so a pulled or broken release is caught first",
+      "matchUpdateTypes": [
+        "minor",
+        "major",
+        "patch"
+      ],
+      "minimumReleaseAge": "14 days"
+    },
+    {
+      "description": "CI's Python version is the oldest the feeder supports, not the newest release",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Image updates never merge themselves: a new base or Calibre changes what the feeder runs on, and a Calibre bump also needs its published checksum",
+      "matchFileNames": [
+        "Dockerfile"
+      ],
+      "automerge": false
+    }
+  ]
+}

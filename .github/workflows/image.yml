@@ -3,7 +3,8 @@ name: image
 # Lints, builds, tests and scans the image, and pushes that same image
 # only when called for a release. Called by ci.yml, which sets the
 # token's permissions per event, so a pull request's run can't write
-# packages.
+# packages. No permissions here: a called workflow's can only narrow
+# the caller's, and would take packages: write from the release job.
 
 on:
   workflow_call:
@@ -12,9 +13,6 @@ on:
         description: Push the tested image to GHCR, versioned from the vX.Y.Z tag
         type: boolean
         default: false
-
-permissions:
-  contents: read
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/cwa-feeder

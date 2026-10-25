@@ -108,6 +108,8 @@ def work(tmp_path):
     for folder in (tmp_path, tmp_path / "tmp", tmp_path / "ingest"):
         folder.chmod(0o777)
     write_epub(tmp_path / "in.epub")
+    # ebook-meta rewrites the book in place, so the file needs opening too.
+    (tmp_path / "in.epub").chmod(0o666)
     return tmp_path
 
 

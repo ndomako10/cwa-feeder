@@ -1,0 +1,18 @@
+[project]
+name = "cwa-feeder"
+version = "0.1.0"
+description = "Feed Chaptarr's ebooks into Calibre-Web Automated with complete metadata"
+license = "GPL-3.0-only"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--import-mode=importlib"

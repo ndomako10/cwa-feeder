@@ -1,0 +1,4 @@
+# Allowlist: the build sees only what the Dockerfile copies, so tests,
+# caches and stray files never reach the image or the build cache.
+*
+!feeder.py

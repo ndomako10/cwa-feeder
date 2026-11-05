@@ -48,6 +48,7 @@ def chaptarr_api(tmp_path, books):
         return responses[path]
 
     get.calls = calls
+    get.responses = responses
     return get
 
 
@@ -86,6 +87,7 @@ def settings(tmp_path, library_ids=()):
         "INSERT INTO identifiers (book, type, val) VALUES (?, 'hardcover-id', ?)",
         enumerate(library_ids),
     )
+    db.execute("CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT)")
     db.commit()
     db.close()
     return Settings(
@@ -123,6 +125,7 @@ class TestRunOnce:
             chaptarr,
             hardcover_api({"175780": hardcover_book()}),
             run=ebook_meta,
+            goodreads={}.get,
         )
 
         assert ingested(config) == ["hc-175780.epub"]
@@ -133,6 +136,7 @@ class TestRunOnce:
             "skipped": [],
             "failed": [],
             "waiting": [],
+            "in_cwa_without_id": [],
         }
 
     def test_given_a_book_already_in_cwa_looks_nothing_up(
@@ -141,7 +145,9 @@ class TestRunOnce:
         config = settings(tmp_path, library_ids=["175780"])
         chaptarr = chaptarr_api(tmp_path, [(16112, "Catching Fire", "175780")])
 
-        run_once(config, chaptarr, hardcover_api(), run=fake_ebook_meta())
+        run_once(
+            config, chaptarr, hardcover_api(), run=fake_ebook_meta(), goodreads={}.get
+        )
 
         assert ingested(config) == []
         assert chaptarr.calls == ["/api/v1/book"]
@@ -153,7 +159,9 @@ class TestRunOnce:
         (config.ingest_dir / "hc-175780.epub").write_bytes(b"earlier copy")
         chaptarr = chaptarr_api(tmp_path, [(16112, "Catching Fire", "175780")])
 
-        report = run_once(config, chaptarr, hardcover_api(), run=fake_ebook_meta())
+        report = run_once(
+            config, chaptarr, hardcover_api(), run=fake_ebook_meta(), goodreads={}.get
+        )
 
         assert (config.ingest_dir / "hc-175780.epub").read_bytes() == b"earlier copy"
         assert report["waiting"] == ["175780"]
@@ -165,7 +173,9 @@ class TestRunOnce:
         chaptarr = chaptarr_api(tmp_path, [(16112, "Catching Fire", "175780")])
         hardcover = hardcover_api({"175780": hardcover_book(description=None)})
 
-        report = run_once(config, chaptarr, hardcover, run=fake_ebook_meta())
+        report = run_once(
+            config, chaptarr, hardcover, run=fake_ebook_meta(), goodreads={}.get
+        )
 
         assert ingested(config) == []
         assert report["held"] == [
@@ -184,7 +194,11 @@ class TestRunOnce:
         hardcover = hardcover_api({"175780": hardcover_book()})
 
         report = run_once(
-            config, chaptarr, hardcover, run=fake_ebook_meta(misread={"title": "X"})
+            config,
+            chaptarr,
+            hardcover,
+            run=fake_ebook_meta(misread={"title": "X"}),
+            goodreads={}.get,
         )
 
         assert ingested(config) == []
@@ -209,11 +223,17 @@ class TestRunOnce:
         }
 
         first = run_once(
-            config, chaptarr, hardcover, run=fake_ebook_meta(has_cover=False)
+            config,
+            chaptarr,
+            hardcover,
+            run=fake_ebook_meta(has_cover=False),
+            goodreads={}.get,
         )
         (config.ingest_dir / "hc-175780.epub").unlink()
         add_to_library(config, "175780")
-        second = run_once(config, chaptarr, hardcover, run=fake_ebook_meta())
+        second = run_once(
+            config, chaptarr, hardcover, run=fake_ebook_meta(), goodreads={}.get
+        )
 
         assert first["incomplete"] == [incomplete]
         assert second["incomplete"] == [incomplete]
@@ -224,7 +244,9 @@ class TestRunOnce:
         config = settings(tmp_path)
         chaptarr = chaptarr_api(tmp_path, [(16112, "Catching Fire", None)])
 
-        report = run_once(config, chaptarr, hardcover_api(), run=fake_ebook_meta())
+        report = run_once(
+            config, chaptarr, hardcover_api(), run=fake_ebook_meta(), goodreads={}.get
+        )
 
         assert report["skipped"] == [
             {
@@ -248,7 +270,9 @@ class TestRunOnce:
                 raise HardcoverError("rate limited")
             return hardcover_book()
 
-        report = run_once(config, chaptarr, hardcover, run=fake_ebook_meta())
+        report = run_once(
+            config, chaptarr, hardcover, run=fake_ebook_meta(), goodreads={}.get
+        )
 
         assert ingested(config) == ["hc-175781.epub"]
         assert report["failed"] == [
@@ -267,7 +291,9 @@ class TestRunOnce:
         (config.work_dir / "hc-175780.epub").write_bytes(b"half written")
         chaptarr = chaptarr_api(tmp_path, [])
 
-        run_once(config, chaptarr, hardcover_api(), run=fake_ebook_meta())
+        run_once(
+            config, chaptarr, hardcover_api(), run=fake_ebook_meta(), goodreads={}.get
+        )
 
         assert list(config.work_dir.iterdir()) == []
 
@@ -275,6 +301,147 @@ class TestRunOnce:
         config = settings(tmp_path)
         chaptarr = chaptarr_api(tmp_path, [(16112, "Catching Fire", None)])
 
-        report = run_once(config, chaptarr, hardcover_api(), run=fake_ebook_meta())
+        report = run_once(
+            config, chaptarr, hardcover_api(), run=fake_ebook_meta(), goodreads={}.get
+        )
 
         assert json.loads(config.report_path.read_text(encoding="utf-8")) == report
+
+
+def on_goodreads_record(chaptarr, book_id, edition="gr:56791389-ebook"):
+    """Make a faked book one Chaptarr holds under a Goodreads record."""
+    for record in (
+        next(b for b in chaptarr.responses["/api/v1/book"] if b["id"] == book_id),
+        chaptarr.responses[f"/api/v1/book/{book_id}"],
+    ):
+        record["hardcoverBookId"] = None
+        record["foreignEditionId"] = edition
+
+
+class TestRunOnceWithAGoodreadsRecord:
+    def test_given_hardcover_maps_its_edition_feeds_it_under_that_id(
+        self, tmp_path, fake_ebook_meta
+    ):
+        config = settings(tmp_path)
+        chaptarr = chaptarr_api(tmp_path, [(2097, "Dungeon Crawler Carl", None)])
+        on_goodreads_record(chaptarr, 2097)
+        ebook_meta = fake_ebook_meta()
+
+        report = run_once(
+            config,
+            chaptarr,
+            hardcover_api({"446681": hardcover_book()}),
+            run=ebook_meta,
+            goodreads={"56791389": "446681"}.get,
+        )
+
+        assert ingested(config) == ["hc-446681.epub"]
+        assert ebook_meta.written["--identifier"] == "hardcover-id:446681"
+        assert ebook_meta.written["--series"] == "The Hunger Games"
+        assert report["skipped"] == []
+
+    def test_given_its_mapped_book_is_already_in_cwa_doesnt_feed_it_again(
+        self, tmp_path, fake_ebook_meta
+    ):
+        config = settings(tmp_path, library_ids=["446681"])
+        chaptarr = chaptarr_api(tmp_path, [(2097, "Dungeon Crawler Carl", None)])
+        on_goodreads_record(chaptarr, 2097)
+
+        report = run_once(
+            config,
+            chaptarr,
+            hardcover_api(),
+            run=fake_ebook_meta(),
+            goodreads={"56791389": "446681"}.get,
+        )
+
+        assert ingested(config) == []
+        assert report["skipped"] == []
+
+    def test_given_hardcover_has_no_mapping_skips_and_reports_it(
+        self, tmp_path, fake_ebook_meta
+    ):
+        config = settings(tmp_path)
+        chaptarr = chaptarr_api(tmp_path, [(2097, "Dungeon Crawler Carl", None)])
+        on_goodreads_record(chaptarr, 2097)
+
+        report = run_once(
+            config, chaptarr, hardcover_api(), run=fake_ebook_meta(), goodreads={}.get
+        )
+
+        assert ingested(config) == []
+        assert report["skipped"] == [
+            {
+                "chaptarr_id": 2097,
+                "title": "Dungeon Crawler Carl",
+                "reason": "no Hardcover ID",
+            }
+        ]
+
+    def test_when_the_lookup_fails_reports_it_and_still_feeds_the_others(
+        self, tmp_path, fake_ebook_meta
+    ):
+        config = settings(tmp_path)
+        chaptarr = chaptarr_api(
+            tmp_path,
+            [(2097, "Dungeon Crawler Carl", None), (16112, "Catching Fire", "175780")],
+        )
+        on_goodreads_record(chaptarr, 2097)
+
+        def lookup(_edition):
+            raise HardcoverError("invalid token")
+
+        report = run_once(
+            config,
+            chaptarr,
+            hardcover_api({"175780": hardcover_book()}),
+            run=fake_ebook_meta(),
+            goodreads=lookup,
+        )
+
+        assert ingested(config) == ["hc-175780.epub"]
+        assert report["skipped"] == []
+        assert report["failed"] == [
+            {
+                "chaptarr_id": 2097,
+                "title": "Dungeon Crawler Carl",
+                "error": "HardcoverError: invalid token",
+            }
+        ]
+
+    def test_given_a_record_with_no_files_never_looks_it_up(
+        self, tmp_path, fake_ebook_meta
+    ):
+        config = settings(tmp_path)
+        chaptarr = chaptarr_api(tmp_path, [(2097, "Dungeon Crawler Carl", None)])
+        on_goodreads_record(chaptarr, 2097)
+        chaptarr.responses["/api/v1/book"][0]["hasFiles"] = False
+
+        def lookup(_edition):
+            raise AssertionError("looked up a book with no files")
+
+        run_once(
+            config, chaptarr, hardcover_api(), run=fake_ebook_meta(), goodreads=lookup
+        )
+
+
+class TestRunOnceWithABookAddedToCwaByHand:
+    def test_given_a_library_book_with_no_hardcover_id_reports_it(
+        self, tmp_path, fake_ebook_meta
+    ):
+        config = settings(tmp_path, library_ids=["175780"])
+        db = sqlite3.connect(config.library_db)
+        db.execute("INSERT INTO books (id, title) VALUES (0, 'Catching Fire')")
+        db.execute("INSERT INTO books (id, title) VALUES (7, 'Mockingjay')")
+        db.commit()
+        db.close()
+
+        report = run_once(
+            config,
+            chaptarr_api(tmp_path, []),
+            hardcover_api(),
+            run=fake_ebook_meta(),
+            goodreads={}.get,
+        )
+
+        assert report["in_cwa_without_id"] == [{"calibre_id": 7, "title": "Mockingjay"}]

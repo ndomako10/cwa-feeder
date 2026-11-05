@@ -107,6 +107,41 @@ def build_metadata(
     return metadata, held, gaps
 
 
+def has_ebook_file(book: dict) -> bool:
+    return book.get("mediaType") == "ebook" and bool(book.get("hasFiles"))
+
+
+# Chaptarr's ID for a Goodreads edition carries its format: "gr:56791389-ebook".
+GOODREADS_EDITION = re.compile(r"^gr:(?P<id>\d+)")
+
+
+def identify_by_goodreads(
+    books: list[dict], lookup: Callable[[str], str | None]
+) -> tuple[list[dict], list[dict]]:
+    """Give ebooks with no Hardcover ID the one their Goodreads edition maps to.
+
+    Returns the books, and report entries for those whose lookup failed, which
+    are left out so a failure isn't reported as "no Hardcover ID" as well. Only
+    ebooks with files are looked up, since each lookup costs an API call.
+    """
+    identified, failed = [], []
+    for book in books:
+        edition = GOODREADS_EDITION.match(book.get("foreignEditionId") or "")
+        if hardcover_id_of(book) or not edition or not has_ebook_file(book):
+            identified.append(book)
+            continue
+        try:
+            hardcover_id = lookup(edition["id"])
+        except Exception as error:  # one bad book mustn't stop the rest
+            entry = {"chaptarr_id": book["id"], "title": book["title"]}
+            failed.append(failure(entry, error))
+            continue
+        if hardcover_id:
+            book = {**book, "hardcoverBookId": f"{HARDCOVER_PREFIX}{hardcover_id}"}
+        identified.append(book)
+    return identified, failed
+
+
 def plan_feed(
     books: list[dict],
     epub_for: Callable[[int], str | None],
@@ -120,7 +155,7 @@ def plan_feed(
     """
     to_feed, skipped = [], []
     for book in books:
-        if book.get("mediaType") != "ebook" or not book.get("hasFiles"):
+        if not has_ebook_file(book):
             continue
         hardcover_id = hardcover_id_of(book)
         if not hardcover_id:
@@ -221,6 +256,15 @@ query ($id: Int!) {
   }
 }
 """
+GOODREADS_MAPPING_QUERY = """
+query ($edition: String!) {
+  book_mappings(
+    where: {platform: {name: {_eq: "goodreads"}}, external_id: {_eq: $edition}}
+  ) {
+    book_id
+  }
+}
+"""
 HTTP_TIMEOUT_SECONDS = 30
 
 
@@ -228,11 +272,16 @@ class HardcoverError(Exception):
     """Hardcover answered, but with an error instead of data."""
 
 
-def parse_hardcover_book(response: dict) -> dict | None:
-    """Reduce Hardcover's GraphQL reply to the fields ``build_metadata`` takes."""
+def hardcover_data(response: dict) -> dict:
+    """Take the data from Hardcover's GraphQL reply, or raise the errors in it."""
     if "errors" in response:
         raise HardcoverError("; ".join(e["message"] for e in response["errors"]))
-    books = response["data"]["books"]
+    return response["data"]
+
+
+def parse_hardcover_book(response: dict) -> dict | None:
+    """Reduce Hardcover's GraphQL reply to the fields ``build_metadata`` takes."""
+    books = hardcover_data(response)["books"]
     if not books:
         return None
     book = books[0]
@@ -259,13 +308,17 @@ def parse_hardcover_book(response: dict) -> dict | None:
     }
 
 
-def fetch_hardcover_book(hardcover_id: str, token: str) -> dict | None:
-    """Look a book up on Hardcover by its ID."""
+def parse_goodreads_mapping(response: dict) -> str | None:
+    """Read the Hardcover ID a Goodreads edition maps to, if it maps to just one."""
+    book_ids = {m["book_id"] for m in hardcover_data(response)["book_mappings"]}
+    return str(book_ids.pop()) if len(book_ids) == 1 else None
+
+
+def query_hardcover(query: str, variables: dict, token: str) -> dict:
+    """POST one GraphQL query to Hardcover and return its reply."""
     request = urllib.request.Request(
         HARDCOVER_URL,
-        data=json.dumps(
-            {"query": HARDCOVER_QUERY, "variables": {"id": int(hardcover_id)}}
-        ).encode(),
+        data=json.dumps({"query": query, "variables": variables}).encode(),
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -273,7 +326,21 @@ def fetch_hardcover_book(hardcover_id: str, token: str) -> dict | None:
         },
     )
     with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as reply:
-        return parse_hardcover_book(json.loads(reply.read()))
+        return json.loads(reply.read())
+
+
+def fetch_hardcover_book(hardcover_id: str, token: str) -> dict | None:
+    """Look a book up on Hardcover by its ID."""
+    return parse_hardcover_book(
+        query_hardcover(HARDCOVER_QUERY, {"id": int(hardcover_id)}, token)
+    )
+
+
+def hardcover_id_for_goodreads_edition(edition: str, token: str) -> str | None:
+    """Look up the Hardcover book that a Goodreads edition ID maps to."""
+    return parse_goodreads_mapping(
+        query_hardcover(GOODREADS_MAPPING_QUERY, {"edition": edition}, token)
+    )
 
 
 # The feeder names each file it copies by the book's Hardcover ID, so a file
@@ -281,16 +348,32 @@ def fetch_hardcover_book(hardcover_id: str, token: str) -> dict | None:
 FED_FILE = re.compile(r"^hc-(?P<id>\d+)\.epub$")
 
 
-def library_hardcover_ids(metadata_db: Path) -> set[str]:
-    """Read the Hardcover IDs in CWA's Calibre library, without locking it."""
+def read_library(metadata_db: Path, query: str) -> list[tuple]:
+    """Run a query on CWA's Calibre library, without locking it."""
     db = sqlite3.connect(f"file:{metadata_db}?mode=ro", uri=True)
     try:
-        rows = db.execute(
-            "SELECT val FROM identifiers WHERE type = 'hardcover-id'"
-        ).fetchall()
+        return db.execute(query).fetchall()
     finally:
         db.close()
-    return {val for (val,) in rows}
+
+
+def library_hardcover_ids(metadata_db: Path) -> set[str]:
+    """Read the Hardcover IDs in CWA's Calibre library."""
+    query = "SELECT val FROM identifiers WHERE type = 'hardcover-id'"
+    return {val for (val,) in read_library(metadata_db, query)}
+
+
+def library_books_without_hardcover_id(metadata_db: Path) -> list[dict]:
+    """List the library's books the feeder can't recognise as already there."""
+    rows = read_library(
+        metadata_db,
+        """
+        SELECT id, title FROM books
+        WHERE id NOT IN (SELECT book FROM identifiers WHERE type = 'hardcover-id')
+        ORDER BY id
+        """,
+    )
+    return [{"calibre_id": book_id, "title": title} for book_id, title in rows]
 
 
 def in_flight_ids(ingest_dir: Path) -> set[str]:
@@ -356,12 +439,14 @@ def run_once(
     settings: Settings,
     chaptarr: Callable[[str], object],
     hardcover: Callable[[str], dict | None],
+    goodreads: Callable[[str], str | None],
     run: Callable[..., object] = subprocess.run,
 ) -> dict:
     """Feed CWA every Chaptarr ebook it lacks, then rewrite the report.
 
     ``chaptarr`` GETs a path from Chaptarr's API; ``hardcover`` looks a book up
-    by its Hardcover ID.
+    by its Hardcover ID; ``goodreads`` finds the Hardcover ID for a Goodreads
+    edition ID.
     """
     # Only the feeder writes here, and anything left behind is from a run that
     # was interrupted, so it's safe to clear and redo.
@@ -377,7 +462,8 @@ def run_once(
             (f["path"] for f in files if f["path"].lower().endswith(".epub")), None
         )
 
-    to_feed, skipped = plan_feed(chaptarr("/api/v1/book"), epub_for, present)
+    books, lookup_failures = identify_by_goodreads(chaptarr("/api/v1/book"), goodreads)
+    to_feed, skipped = plan_feed(books, epub_for, present)
 
     report = {
         "incomplete": [
@@ -390,8 +476,9 @@ def run_once(
             {"chaptarr_id": book["id"], "title": book["title"], "reason": reason}
             for book, reason in skipped
         ],
-        "failed": [],
+        "failed": lookup_failures,
         "waiting": sorted(waiting),
+        "in_cwa_without_id": library_books_without_hardcover_id(settings.library_db),
     }
     for book, epub in to_feed:
         entry = {
@@ -399,7 +486,11 @@ def run_once(
             "title": book["title"],
         }
         try:
-            record = chaptarr(f"/api/v1/book/{book['id']}")
+            # The full record lacks an ID that came from a Goodreads lookup.
+            record = {
+                **chaptarr(f"/api/v1/book/{book['id']}"),
+                "hardcoverBookId": book["hardcoverBookId"],
+            }
             editions = chaptarr(f"/api/v1/edition?bookId={book['id']}")
             edition = next((e for e in editions if e.get("monitored")), None)
             metadata, held, gaps = build_metadata(
@@ -417,9 +508,7 @@ def run_once(
             event(logging.WARNING, "held", **entry, read_back_wrong=mismatch.fields)
             continue
         except Exception as error:  # one bad book mustn't stop the rest
-            failure = f"{type(error).__name__}: {error}"
-            report["failed"].append({**entry, "error": failure})
-            event(logging.ERROR, "failed", **entry, error=failure)
+            report["failed"].append(failure(entry, error))
             continue
         event(logging.INFO, "fed", **entry, missing=gaps)
         if gaps:
@@ -444,6 +533,13 @@ def previous_incomplete(report_path: Path) -> list[dict]:
 def event(level: int, name: str, **fields: object) -> None:
     """Log one event, with its fields as JSON keys."""
     log.log(level, name, extra={"fields": fields})
+
+
+def failure(entry: dict, error: Exception) -> dict:
+    """Log a book's failure and return its report entry."""
+    failed = {**entry, "error": f"{type(error).__name__}: {error}"}
+    event(logging.ERROR, "failed", **failed)
+    return failed
 
 
 class JsonFormatter(logging.Formatter):
@@ -532,8 +628,13 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler])
     settings, config = settings_from_env(dict(os.environ))
     chaptarr = chaptarr_client(config["chaptarr_url"], config["chaptarr_api_key"])
-    hardcover = functools.partial(fetch_hardcover_book, token=config["hardcover_token"])
-    serve(lambda: run_once(settings, chaptarr, hardcover), config["interval_seconds"])
+    token = config["hardcover_token"]
+    hardcover = functools.partial(fetch_hardcover_book, token=token)
+    goodreads = functools.partial(hardcover_id_for_goodreads_edition, token=token)
+    serve(
+        lambda: run_once(settings, chaptarr, hardcover, goodreads),
+        config["interval_seconds"],
+    )
 
 
 if __name__ == "__main__":

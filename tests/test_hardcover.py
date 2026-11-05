@@ -13,6 +13,8 @@ from feeder import (
     HARDCOVER_URL,
     HardcoverError,
     fetch_hardcover_book,
+    hardcover_id_for_goodreads_edition,
+    parse_goodreads_mapping,
     parse_hardcover_book,
 )
 
@@ -115,3 +117,40 @@ class TestFetchHardcoverBook:
         assert request.get_header("Authorization") == "Bearer test-token"
         assert json.loads(request.data)["variables"] == {"id": 175780}
         assert parsed["publisher"] == "Scholastic Inc."
+
+
+def mappings(*book_ids):
+    return {"data": {"book_mappings": [{"book_id": i} for i in book_ids]}}
+
+
+class TestParseGoodreadsMapping:
+    def test_given_one_mapped_book_returns_its_id(self):
+        assert parse_goodreads_mapping(mappings(446681)) == "446681"
+
+    def test_given_several_mappings_to_one_book_returns_its_id(self):
+        assert parse_goodreads_mapping(mappings(446681, 446681)) == "446681"
+
+    def test_given_mappings_to_different_books_returns_none_rather_than_guessing(self):
+        assert parse_goodreads_mapping(mappings(446681, 12)) is None
+
+    def test_given_no_mapping_returns_none(self):
+        assert parse_goodreads_mapping(mappings()) is None
+
+    def test_given_an_error_response_raises_rather_than_reading_it_as_no_mapping(self):
+        with pytest.raises(HardcoverError, match="invalid token"):
+            parse_goodreads_mapping({"errors": [{"message": "invalid token"}]})
+
+
+class TestHardcoverIdForGoodreadsEdition:
+    def test_when_called_queries_by_edition_with_the_bearer_token(self):
+        reply = mock.MagicMock()
+        reply.__enter__.return_value = reply
+        reply.read.return_value = json.dumps(mappings(446681)).encode()
+
+        with mock.patch("feeder.urllib.request.urlopen", return_value=reply) as urlopen:
+            found = hardcover_id_for_goodreads_edition("56791389", token="test-token")
+
+        request = urlopen.call_args.args[0]
+        assert request.get_header("Authorization") == "Bearer test-token"
+        assert json.loads(request.data)["variables"] == {"edition": "56791389"}
+        assert found == "446681"

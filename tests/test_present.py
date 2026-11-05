@@ -6,7 +6,11 @@ The identifiers table matches Calibre 9.1's `metadata.db` in CWA's library
 
 import sqlite3
 
-from feeder import in_flight_ids, library_hardcover_ids
+from feeder import (
+    in_flight_ids,
+    library_books_without_hardcover_id,
+    library_hardcover_ids,
+)
 
 
 def calibre_library(path, identifiers):
@@ -55,3 +59,25 @@ class TestInFlightIds:
         (tmp_path / "hc-175780.epub.tmp").touch()
 
         assert in_flight_ids(tmp_path) == set()
+
+
+class TestLibraryBooksWithoutHardcoverId:
+    def test_given_a_book_with_only_other_identifiers_returns_it(self, tmp_path):
+        db = tmp_path / "metadata.db"
+        calibre_library(
+            db,
+            [(1, "hardcover-id", "175780"), (2, "isbn", "9780439023511")],
+        )
+        library = sqlite3.connect(db)
+        library.execute("CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT)")
+        library.executemany(
+            "INSERT INTO books VALUES (?, ?)",
+            [(1, "Catching Fire"), (2, "Mockingjay"), (3, "No identifiers")],
+        )
+        library.commit()
+        library.close()
+
+        assert library_books_without_hardcover_id(db) == [
+            {"calibre_id": 2, "title": "Mockingjay"},
+            {"calibre_id": 3, "title": "No identifiers"},
+        ]

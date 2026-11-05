@@ -8,7 +8,9 @@ ISBN, publisher and Hardcover ID.
 CWA's own metadata fetch searches by title and author and often picks
 the wrong book. Chaptarr already knows each book's exact Hardcover ID
 and series, so the feeder uses those, and looks up the rest from
-[Hardcover](https://hardcover.app/) by ID.
+[Hardcover](https://hardcover.app/) by ID. A book Chaptarr holds under a
+Goodreads record takes its ID from Hardcover's mapping of that Goodreads
+edition, which is also an exact match, never a search.
 
 ## How it works
 
@@ -16,7 +18,8 @@ The feeder runs in a loop. Each pass reconciles the whole library
 rather than reacting to imports, so a pass that fails part-way, or a
 book imported while CWA was down, is picked up on the next one.
 
-1. List every Chaptarr ebook with an EPUB file, keyed by Hardcover ID.
+1. List every Chaptarr ebook with an EPUB file, keyed by Hardcover ID,
+   looking up the ID of any that has only a Goodreads edition ID.
 2. Read the Hardcover IDs already in CWA's `metadata.db` (read-only)
    and those waiting in its ingest folder.
 3. For each book missing from both, copy its EPUB to a work folder,
@@ -24,7 +27,9 @@ book imported while CWA was down, is picked up on the next one.
    move the file into CWA's ingest folder. The move is a rename on the
    same mount, so CWA never sees a partial file.
 4. Rewrite a report of every book that was held, failed, skipped or is
-   missing optional fields, with the reason.
+   missing optional fields, with the reason. It also lists books in CWA's
+   library with no Hardcover ID. The feeder can't tell that such a book
+   is already there, so it feeds Chaptarr's copy as a second one.
 
 The library's files are only ever read. The copy is what gets written,
 so a file that is also seeding a torrent is left untouched.
@@ -34,7 +39,7 @@ so a file that is also seeding a torrent is left untouched.
 | Field | Source | If missing |
 |---|---|---|
 | Title, author | Chaptarr's ebook record | Held |
-| Hardcover ID | Chaptarr | Skipped: it can't be matched |
+| Hardcover ID | Chaptarr, else Hardcover's mapping of the Goodreads edition | Skipped: it can't be matched. Also skipped if the edition maps to several books |
 | Series and number | Chaptarr's series title, split at the last ` #` | Fed; reported only if Hardcover lists a series |
 | Description | Hardcover | Held |
 | Published date | Hardcover, else Chaptarr's release date | Fed, reported |

@@ -45,9 +45,11 @@ FROM python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c
 # cover. Not version-pinned, for the reason in stage 1.
 # feeder.py uses only the standard library, so pip goes: it would only
 # be a way to install code at run time, and it vendors its own copies of
-# urllib3 and certifi that the image scan flags.
+# urllib3 and certifi that the image scan flags. The upgrade applies
+# Debian's security fixes that the base image doesn't have yet.
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         libegl1 \
         libfontconfig1 \
         libglx0 \

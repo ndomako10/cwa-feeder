@@ -1,6 +1,6 @@
 [project]
 name = "cwa-feeder"
-version = "0.2.0"
+version = "0.2.1"
 description = "Feed Chaptarr's ebooks into Calibre-Web Automated with complete metadata"
 license = "GPL-3.0-only"
 requires-python = ">=3.11"

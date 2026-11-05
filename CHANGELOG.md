@@ -7,10 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1] - 2026-11-05
+
+### Fixed
+- **image:** Apply Debian's security updates over the base image
+
+---
 ## [0.2.0] - 2026-11-05
 
 ### Added
 - **feeder:** Identify Goodreads records and report books with no ID
+
+### Changed
+- **release:** V0.2.0
 
 ---
 ## [0.1.1] - 2026-10-25
